@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { MealDraft, parseLogMeal } from "@/lib/log-meal";
+import { enrichDraftWithLookup } from "@/lib/nutrition-lookup";
 
 type LogMealRequest = {
   text?: string;
@@ -269,13 +270,15 @@ export async function POST(request: Request) {
   }
 
   const normalizedDraft = mergeAgentIntoDraft(text, deterministicDraft, agentExtraction);
+  const { draft: lookedUpDraft, lookup } = await enrichDraftWithLookup(normalizedDraft);
 
   return NextResponse.json({
     ok: true,
     ...berlinNow(),
     model,
-    normalizedDraft,
+    normalizedDraft: lookedUpDraft,
     agentExtraction,
+    lookup,
     note: "MVP slice: live agent extraction + deterministic normalization.",
   });
 }
