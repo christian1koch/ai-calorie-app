@@ -11,18 +11,24 @@ type ApiResult = {
   berlinTime?: string;
   timezone?: string;
   entryDraft?: unknown;
+  normalizedDraft?: unknown;
+  deterministicDraft?: unknown;
+  agentExtraction?: unknown;
+  model?: string;
   note?: string;
 };
 
 export default function Home() {
   const [text, setText] = useState("I had 250g quark 220 kcal protein 30g carbs 8g fat 2g");
-  const [result, setResult] = useState<ApiResult | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [parserResult, setParserResult] = useState<ApiResult | null>(null);
+  const [agentResult, setAgentResult] = useState<ApiResult | null>(null);
+  const [isParserLoading, setIsParserLoading] = useState(false);
+  const [isAgentLoading, setIsAgentLoading] = useState(false);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+  async function onParserSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setIsLoading(true);
-    setResult(null);
+    setIsParserLoading(true);
+    setParserResult(null);
 
     try {
       const response = await fetch("/api/log-meal", {
@@ -33,11 +39,32 @@ export default function Home() {
         body: JSON.stringify({ text }),
       });
       const data = (await response.json()) as ApiResult;
-      setResult(data);
+      setParserResult(data);
     } catch {
-      setResult({ error: "Request failed." });
+      setParserResult({ error: "Request failed." });
     } finally {
-      setIsLoading(false);
+      setIsParserLoading(false);
+    }
+  }
+
+  async function onAgentSubmit() {
+    setIsAgentLoading(true);
+    setAgentResult(null);
+
+    try {
+      const response = await fetch("/api/agent/log-meal", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+      });
+      const data = (await response.json()) as ApiResult;
+      setAgentResult(data);
+    } catch {
+      setAgentResult({ error: "Request failed." });
+    } finally {
+      setIsAgentLoading(false);
     }
   }
 
@@ -45,10 +72,10 @@ export default function Home() {
     <main className="mx-auto min-h-screen max-w-3xl px-6 py-12">
       <h1 className="text-3xl font-bold tracking-tight">AI Calorie Tracker (MVP)</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        First cycle: log meal intent parser draft (`log_meal`) with Berlin-local timestamp.
+        Test both deterministic parsing and live agent extraction for intent `log_meal`.
       </p>
 
-      <form onSubmit={onSubmit} className="mt-8 space-y-3">
+      <form onSubmit={onParserSubmit} className="mt-8 space-y-3">
         <label htmlFor="meal-input" className="text-sm font-medium">
           Meal text (English)
         </label>
@@ -58,15 +85,32 @@ export default function Home() {
           onChange={(event) => setText(event.target.value)}
           placeholder="I had 200g skyr and an apple"
         />
-        <Button type="submit" disabled={isLoading || text.trim().length === 0}>
-          {isLoading ? "Parsing..." : "Parse log_meal draft"}
-        </Button>
+        <div className="flex gap-3">
+          <Button type="submit" disabled={isParserLoading || text.trim().length === 0}>
+            {isParserLoading ? "Parsing..." : "Deterministic parse"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onAgentSubmit}
+            disabled={isAgentLoading || text.trim().length === 0}
+          >
+            {isAgentLoading ? "Calling agent..." : "Agent parse"}
+          </Button>
+        </div>
       </form>
 
       <section className="mt-8">
-        <h2 className="text-lg font-semibold">Response</h2>
+        <h2 className="text-lg font-semibold">Deterministic Response</h2>
         <pre className="mt-3 overflow-x-auto rounded-md border p-4 text-xs leading-5">
-          {JSON.stringify(result, null, 2)}
+          {JSON.stringify(parserResult, null, 2)}
+        </pre>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-lg font-semibold">Agent Response</h2>
+        <pre className="mt-3 overflow-x-auto rounded-md border p-4 text-xs leading-5">
+          {JSON.stringify(agentResult, null, 2)}
         </pre>
       </section>
     </main>

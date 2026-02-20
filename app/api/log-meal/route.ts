@@ -53,6 +53,6 @@ export async function POST(request: Request) {
     ok: true,
     ...berlinNow(),
     entryDraft: parsed,
-    note: "MVP slice: parse-only draft. No nutrition lookup or persistence yet.",
+    note: "MVP slice: parse + Germany-focused lookup fallback. No persistence yet.",
   });
 }
