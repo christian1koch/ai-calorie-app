@@ -113,10 +113,88 @@ async function main() {
   } catch {
     // Column already exists for existing local databases.
   }
+  try {
+    await prisma.$executeRawUnsafe('ALTER TABLE "MealEntry" ADD COLUMN "assumptionsJson" TEXT NOT NULL DEFAULT \'[]\';');
+  } catch {
+    // Column already exists.
+  }
+  try {
+    await prisma.$executeRawUnsafe('ALTER TABLE "MealEntry" ADD COLUMN "provenanceJson" TEXT NOT NULL DEFAULT \'{}\';');
+  } catch {
+    // Column already exists.
+  }
+  try {
+    await prisma.$executeRawUnsafe('ALTER TABLE "MealEntry" ADD COLUMN "confidenceScore" REAL;');
+  } catch {
+    // Column already exists.
+  }
+  try {
+    await prisma.$executeRawUnsafe('ALTER TABLE "MealEntry" ADD COLUMN "deletedAt" DATETIME;');
+  } catch {
+    // Column already exists.
+  }
   await prisma.$executeRawUnsafe(
     'CREATE INDEX IF NOT EXISTS "MealEntry_berlinDate_idx" ON "MealEntry"("berlinDate");'
   );
   await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "MealEntry_mealId_idx" ON "MealEntry"("mealId");');
+  await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "MealEntry_deletedAt_idx" ON "MealEntry"("deletedAt");');
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "ConversationSession" (
+      "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      "sessionId" TEXT NOT NULL,
+      "activeMealId" INTEGER,
+      "lastIntent" TEXT,
+      "metadataJson" TEXT NOT NULL DEFAULT '{}',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await prisma.$executeRawUnsafe(
+    'CREATE UNIQUE INDEX IF NOT EXISTS "ConversationSession_sessionId_key" ON "ConversationSession"("sessionId");'
+  );
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "MealAction" (
+      "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      "sessionId" TEXT,
+      "mealId" INTEGER,
+      "actionType" TEXT NOT NULL,
+      "status" TEXT NOT NULL,
+      "rawText" TEXT NOT NULL,
+      "resolvedIntent" TEXT NOT NULL,
+      "reason" TEXT,
+      "entryIdsJson" TEXT NOT NULL DEFAULT '[]',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX IF NOT EXISTS "MealAction_sessionId_idx" ON "MealAction"("sessionId");'
+  );
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX IF NOT EXISTS "MealAction_mealId_idx" ON "MealAction"("mealId");'
+  );
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX IF NOT EXISTS "MealAction_createdAt_idx" ON "MealAction"("createdAt");'
+  );
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "EntryRevision" (
+      "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      "entryId" INTEGER NOT NULL,
+      "actor" TEXT NOT NULL,
+      "reason" TEXT NOT NULL,
+      "beforeJson" TEXT NOT NULL,
+      "afterJson" TEXT NOT NULL,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX IF NOT EXISTS "EntryRevision_entryId_idx" ON "EntryRevision"("entryId");'
+  );
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX IF NOT EXISTS "EntryRevision_createdAt_idx" ON "EntryRevision"("createdAt");'
+  );
 
   for (const product of products) {
     await prisma.consumedProduct.upsert({

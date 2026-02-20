@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isValidIsoDate } from "@/lib/berlin-time";
 import { prisma } from "@/lib/prisma";
+import { ensureAgentV2Schema } from "@/lib/db-compat";
 
 function roundToSingleDecimal(value: number): number {
   return Math.round(value * 10) / 10;
@@ -11,6 +12,8 @@ function hasMealModel() {
 }
 
 export async function GET(request: Request) {
+  await ensureAgentV2Schema();
+
   const { searchParams } = new URL(request.url);
   const date = searchParams.get("date");
 
@@ -24,6 +27,7 @@ export async function GET(request: Request) {
   const entries = await prisma.mealEntry.findMany({
     where: {
       berlinDate: date,
+      deletedAt: null,
     },
     orderBy: [{ berlinTime: "asc" }, { id: "asc" }],
   });
@@ -64,6 +68,7 @@ export async function GET(request: Request) {
         },
         include: {
           entries: {
+            where: { deletedAt: null },
             orderBy: [{ id: "asc" }],
           },
         },
@@ -130,6 +135,12 @@ export async function GET(request: Request) {
         lookupSourceType: entry.lookupSourceType,
         lookupLabel: entry.lookupLabel,
         lookupUrl: entry.lookupUrl,
+        lineage: entry.source === "user" ? "user" : entry.source === "lookup" ? "lookup" : "estimated",
+        provenance: {
+          sourceType: entry.lookupSourceType,
+          label: entry.lookupLabel,
+          url: entry.lookupUrl,
+        },
       })),
     })),
     entries: entries.map((entry) => ({

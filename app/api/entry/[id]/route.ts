@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ensureAgentV2Schema } from "@/lib/db-compat";
 
 type PatchEntryRequest = {
   item?: string;
@@ -55,6 +56,8 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  await ensureAgentV2Schema();
+
   const params = await context.params;
   const id = Number(params.id);
   if (!Number.isInteger(id) || id <= 0) {
@@ -103,10 +106,57 @@ export async function PATCH(
   data.confidence = "high";
 
   try {
+    const before = await prisma.mealEntry.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        item: true,
+        amountGrams: true,
+        kcal: true,
+        proteinG: true,
+        carbsG: true,
+        fatG: true,
+        source: true,
+        confidence: true,
+        confidenceScore: true,
+        assumptions: true,
+        assumptionsJson: true,
+        provenanceJson: true,
+      },
+    });
+    if (!before) {
+      return NextResponse.json({ error: "Entry not found." }, { status: 404 });
+    }
+
     const updated = await prisma.mealEntry.update({
       where: { id },
       data,
     });
+
+    await prisma.mealEntry.update({
+      where: { id },
+      data: {
+        assumptionsJson: JSON.stringify(payload.assumptions ?? []),
+        confidenceScore: 0.95,
+        provenanceJson: JSON.stringify({
+          sourceType: "user",
+          label: "Manual edit",
+          url: null,
+        }),
+      },
+    });
+
+    await (prisma as unknown as { entryRevision?: { create: (args: unknown) => Promise<unknown> } }).entryRevision?.create(
+      {
+        data: {
+          entryId: id,
+          actor: "user",
+          reason: "Manual PATCH /api/entry/:id",
+          beforeJson: JSON.stringify(before),
+          afterJson: JSON.stringify(updated),
+        },
+      }
+    );
     if (updated.mealId) {
       await recalcMealTotals(updated.mealId);
     }

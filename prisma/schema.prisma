@@ -36,19 +36,25 @@ model MealEntry {
   source           String
   confidence       String
   assumptions      String
+  assumptionsJson  String   @default("[]")
+  provenanceJson   String   @default("{}")
   lookupSourceType String?
   lookupLabel      String?
   lookupUrl        String?
   agentModel       String?
+  confidenceScore  Float?
+  deletedAt        DateTime?
   berlinDate       String
   berlinTime       String
   timezone         String   @default("Europe/Berlin")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   meal             Meal?    @relation(fields: [mealId], references: [id], onDelete: SetNull)
+  revisions        EntryRevision[]
 
   @@index([berlinDate])
   @@index([mealId])
+  @@index([deletedAt])
 }
 
 model Meal {
@@ -67,6 +73,51 @@ model Meal {
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
   entries    MealEntry[]
+  sessions   ConversationSession[]
+  actions    MealAction[]
 
   @@index([berlinDate])
+}
+
+model ConversationSession {
+  id           Int      @id @default(autoincrement())
+  sessionId    String   @unique
+  activeMealId Int?
+  lastIntent   String?
+  metadataJson String   @default("{}")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  activeMeal   Meal?    @relation(fields: [activeMealId], references: [id], onDelete: SetNull)
+}
+
+model MealAction {
+  id             Int      @id @default(autoincrement())
+  sessionId      String?
+  mealId         Int?
+  actionType     String
+  status         String
+  rawText        String
+  resolvedIntent String
+  reason         String?
+  entryIdsJson   String   @default("[]")
+  createdAt      DateTime @default(now())
+  meal           Meal?    @relation(fields: [mealId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId])
+  @@index([mealId])
+  @@index([createdAt])
+}
+
+model EntryRevision {
+  id         Int      @id @default(autoincrement())
+  entryId    Int
+  actor      String
+  reason     String
+  beforeJson String
+  afterJson  String
+  createdAt  DateTime @default(now())
+  entry      MealEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@index([entryId])
+  @@index([createdAt])
 }

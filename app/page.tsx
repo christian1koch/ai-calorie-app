@@ -9,8 +9,19 @@ type AgentResponse = {
   error?: string;
   berlinDate?: string;
   berlinTime?: string;
-  action?: "log_meal" | "list_meals" | "delete_meal" | "add_to_meal";
+  action?: "log_meal" | "list_meals" | "delete_meal" | "add_to_meal" | "update_meal";
   assistantText?: string;
+  message?: string;
+  actions?: Array<"log" | "patch" | "delete" | "list">;
+  entities?: {
+    mealIds: number[];
+    entryIds: number[];
+  };
+  confidence?: {
+    overall: number;
+    items: Array<{ item: string; score: number }>;
+  };
+  requiresInput?: string | null;
   activeMealId?: number | null;
   normalizedDraft?: {
     items?: Array<{
@@ -76,6 +87,12 @@ type DaySummaryResult = {
       lookupSourceType: string | null;
       lookupLabel: string | null;
       lookupUrl: string | null;
+      lineage?: string;
+      provenance?: {
+        sourceType?: string | null;
+        label?: string | null;
+        url?: string | null;
+      };
     }>;
   }>;
   entries?: SummaryEntry[];
@@ -102,6 +119,10 @@ function makeAssistantText(response: AgentResponse): string {
     return response.assistantText;
   }
 
+  if (response.message) {
+    return response.message;
+  }
+
   if (response.mealSummary?.text) {
     return response.mealSummary.text;
   }
@@ -118,7 +139,7 @@ function sourceBadgeLabel(food: {
   source: string;
   lookupSourceType: string | null;
 }): string {
-  if (food.lookupSourceType === "openfoodfacts_de") return "Internet";
+  if (food.lookupSourceType?.startsWith("openfoodfacts_")) return "Internet";
   if (food.lookupSourceType === "consumed_products") return "DB";
   if (food.source === "estimated") return "Estimated";
   if (food.source === "user") return "User";
@@ -174,18 +195,28 @@ export default function Home() {
     setIsAgentLoading(true);
 
     try {
+      const history = [...messages, userMessage].slice(-8).map((message) => ({
+        role: message.role,
+        text: message.text,
+      }));
       const response = await fetch("/api/agent/log-meal", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ text: userText, context: { activeMealId } }),
+        body: JSON.stringify({ text: userText, context: { activeMealId }, history }),
       });
       const data = (await response.json()) as AgentResponse;
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: "assistant",
-        text: data.error ?? makeAssistantText(data),
+        text:
+          data.error ??
+          `${makeAssistantText(data)}${
+            data.confidence
+              ? `\n(confidence ${(data.confidence.overall * 100).toFixed(0)}%)`
+              : ""
+          }`,
       };
       setMessages((prev) => [...prev, assistantMessage]);
       if (data.activeMealId !== undefined) {
@@ -330,6 +361,10 @@ export default function Home() {
                                 : food.source === "estimated"
                                   ? "Source: Estimated from macros."
                                   : "Source: User-provided values."}
+                              {food.lineage ? ` | Lineage: ${food.lineage}` : ""}
+                              {typeof food.confidence === "string"
+                                ? ` | Confidence: ${food.confidence}`
+                                : ""}
                               {food.lookupUrl ? (
                                 <>
                                   {" "}
