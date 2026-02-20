@@ -1,16 +1,11 @@
 import { MealDraft } from "@/lib/log-meal";
+import { prisma } from "@/lib/prisma";
 
 type NutritionPer100g = {
   kcal: number;
   proteinG: number;
   carbsG: number;
   fatG: number;
-};
-
-type ConsumedProduct = {
-  name: string;
-  aliases: string[];
-  nutritionPer100g: NutritionPer100g;
 };
 
 export type LookupSourceType = "consumed_products" | "openfoodfacts_de";
@@ -21,24 +16,6 @@ export type NutritionLookupMeta = {
 };
 
 const DEFAULT_LOOKUP_GRAMS = 100;
-
-const CONSUMED_PRODUCTS_DB: ConsumedProduct[] = [
-  {
-    name: "Milbona Skyr Natur",
-    aliases: ["skyr", "milbona skyr", "natur skyr"],
-    nutritionPer100g: { kcal: 62, proteinG: 11, carbsG: 3.9, fatG: 0.2 },
-  },
-  {
-    name: "Magerquark",
-    aliases: ["quark", "magerquark"],
-    nutritionPer100g: { kcal: 67, proteinG: 12, carbsG: 4, fatG: 0.2 },
-  },
-  {
-    name: "Haferflocken",
-    aliases: ["oats", "haferflocken"],
-    nutritionPer100g: { kcal: 372, proteinG: 13.5, carbsG: 58.7, fatG: 7 },
-  },
-];
 
 function roundToSingleDecimal(value: number): number {
   return Math.round(value * 10) / 10;
@@ -63,11 +40,56 @@ function maybeNeedsLookup(draft: MealDraft): boolean {
   );
 }
 
-function findConsumedProduct(item: string): ConsumedProduct | undefined {
-  const normalizedItem = item.toLowerCase();
-  return CONSUMED_PRODUCTS_DB.find((product) =>
-    product.aliases.some((alias) => normalizedItem.includes(alias))
-  );
+async function findConsumedProduct(item: string) {
+  const normalizedItem = item.toLowerCase().trim();
+  if (!normalizedItem) {
+    return null;
+  }
+
+  const products = await prisma.consumedProduct.findMany({
+    select: {
+      id: true,
+      name: true,
+      aliases: true,
+      searchText: true,
+      kcalPer100g: true,
+      proteinPer100g: true,
+      carbsPer100g: true,
+      fatPer100g: true,
+    },
+    take: 200,
+  });
+
+  let bestMatch: (typeof products)[number] | null = null;
+  let bestScore = 0;
+
+  for (const product of products) {
+    const aliases = product.aliases
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    const terms = [product.name.toLowerCase(), ...aliases, product.searchText.toLowerCase()];
+
+    const score = terms.reduce((accumulator, term) => {
+      if (!term) {
+        return accumulator;
+      }
+      if (normalizedItem.includes(term)) {
+        return Math.max(accumulator, term.length + 5);
+      }
+      if (term.includes(normalizedItem)) {
+        return Math.max(accumulator, normalizedItem.length + 2);
+      }
+      return accumulator;
+    }, 0);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = product;
+    }
+  }
+
+  return bestMatch;
 }
 
 async function searchOpenFoodFactsGermany(item: string): Promise<NutritionPer100g | undefined> {
@@ -159,17 +181,33 @@ export async function enrichDraftWithLookup(
 
   const amountForScale = draft.amountGrams ?? DEFAULT_LOOKUP_GRAMS;
 
-  const consumedHit = findConsumedProduct(draft.item);
-  if (consumedHit) {
-    const nutrition = scaleFromPer100g(consumedHit.nutritionPer100g, amountForScale);
-    const lookup = {
-      sourceType: "consumed_products" as const,
-      label: `Consumed products DB (${consumedHit.name})`,
-    };
-    return {
-      draft: mergeNutritionWithDraft(draft, nutrition, lookup),
-      lookup,
-    };
+  try {
+    const consumedHit = await findConsumedProduct(draft.item);
+    if (consumedHit) {
+      const nutrition = scaleFromPer100g(
+        {
+          kcal: consumedHit.kcalPer100g,
+          proteinG: consumedHit.proteinPer100g,
+          carbsG: consumedHit.carbsPer100g,
+          fatG: consumedHit.fatPer100g,
+        },
+        amountForScale
+      );
+
+      const lookup = {
+        sourceType: "consumed_products" as const,
+        label: `Consumed products DB (${consumedHit.name})`,
+      };
+      return {
+        draft: mergeNutritionWithDraft(draft, nutrition, lookup),
+        lookup,
+      };
+    }
+  } catch (error) {
+    console.error("[nutrition-lookup] Consumed products DB lookup failed.", {
+      item: draft.item,
+      error,
+    });
   }
 
   try {
