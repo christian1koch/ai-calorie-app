@@ -93,6 +93,7 @@ async function main() {
       "assumptions" TEXT NOT NULL,
       "lookupSourceType" TEXT,
       "lookupLabel" TEXT,
+      "lookupUrl" TEXT,
       "agentModel" TEXT,
       "berlinDate" TEXT NOT NULL,
       "berlinTime" TEXT NOT NULL,
@@ -104,6 +105,11 @@ async function main() {
 
   try {
     await prisma.$executeRawUnsafe('ALTER TABLE "MealEntry" ADD COLUMN "mealId" INTEGER;');
+  } catch {
+    // Column already exists for existing local databases.
+  }
+  try {
+    await prisma.$executeRawUnsafe('ALTER TABLE "MealEntry" ADD COLUMN "lookupUrl" TEXT;');
   } catch {
     // Column already exists for existing local databases.
   }

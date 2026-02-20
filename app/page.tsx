@@ -71,6 +71,11 @@ type DaySummaryResult = {
       item: string;
       amountGrams: number | null;
       kcal: number | null;
+      source: string;
+      confidence: string;
+      lookupSourceType: string | null;
+      lookupLabel: string | null;
+      lookupUrl: string | null;
     }>;
   }>;
   entries?: SummaryEntry[];
@@ -107,6 +112,17 @@ function makeAssistantText(response: AgentResponse): string {
   }
 
   return `Logged ${items.map((item) => item.name).join(" + ")}.`;
+}
+
+function sourceBadgeLabel(food: {
+  source: string;
+  lookupSourceType: string | null;
+}): string {
+  if (food.lookupSourceType === "openfoodfacts_de") return "Internet";
+  if (food.lookupSourceType === "consumed_products") return "DB";
+  if (food.source === "estimated") return "Estimated";
+  if (food.source === "user") return "User";
+  return "Mixed";
 }
 
 export default function Home() {
@@ -299,8 +315,35 @@ export default function Home() {
                       </div>
                       <div className="mt-2 space-y-1">
                         {meal.foods.map((food) => (
-                          <div key={food.id} className="text-xs text-muted-foreground">
-                            {food.item} | {food.amountGrams ?? "-"}g | {food.kcal ?? "-"} kcal
+                          <div key={food.id} className="rounded border p-2 text-xs">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-medium text-foreground">
+                                {food.item} | {food.amountGrams ?? "-"}g | {food.kcal ?? "-"} kcal
+                              </div>
+                              <span className="rounded bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">
+                                {sourceBadgeLabel(food)}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-muted-foreground">
+                              {food.lookupLabel
+                                ? `Source: ${food.lookupLabel}`
+                                : food.source === "estimated"
+                                  ? "Source: Estimated from macros."
+                                  : "Source: User-provided values."}
+                              {food.lookupUrl ? (
+                                <>
+                                  {" "}
+                                  <a
+                                    href={food.lookupUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="underline"
+                                  >
+                                    link
+                                  </a>
+                                </>
+                              ) : null}
+                            </div>
                           </div>
                         ))}
                       </div>

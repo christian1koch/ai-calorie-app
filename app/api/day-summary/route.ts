@@ -48,6 +48,11 @@ export async function GET(request: Request) {
                   proteinG: number | null;
                   carbsG: number | null;
                   fatG: number | null;
+                  source: string;
+                  confidence: string;
+                  lookupSourceType: string | null;
+                  lookupLabel: string | null;
+                  lookupUrl: string | null;
                 }>;
               }>
             >;
@@ -120,6 +125,11 @@ export async function GET(request: Request) {
         proteinG: entry.proteinG,
         carbsG: entry.carbsG,
         fatG: entry.fatG,
+        source: entry.source,
+        confidence: entry.confidence,
+        lookupSourceType: entry.lookupSourceType,
+        lookupLabel: entry.lookupLabel,
+        lookupUrl: entry.lookupUrl,
       })),
     })),
     entries: entries.map((entry) => ({

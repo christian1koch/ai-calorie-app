@@ -1,6 +1,5 @@
 import { MealDraft } from "@/lib/log-meal";
 import { MealItemDraft } from "@/lib/log-meal-items";
-import { prisma } from "@/lib/prisma";
 
 type NutritionPer100g = {
   kcal: number;
@@ -9,11 +8,25 @@ type NutritionPer100g = {
   fatG: number;
 };
 
-export type LookupSourceType = "consumed_products" | "openfoodfacts_de";
+export type LookupSourceType = "openfoodfacts_de";
 
 export type NutritionLookupMeta = {
   sourceType: LookupSourceType;
   label: string;
+  url?: string;
+};
+
+export type NutritionCandidate = {
+  id: string;
+  name: string;
+  brand?: string;
+  kcalPer100g: number;
+  proteinPer100g: number;
+  carbsPer100g: number;
+  fatPer100g: number;
+  url: string;
+  sourceType: LookupSourceType;
+  sourceLabel: string;
 };
 
 const DEFAULT_LOOKUP_GRAMS = 100;
@@ -22,14 +35,31 @@ function roundToSingleDecimal(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function scaleFromPer100g(nutrition: NutritionPer100g, amountGrams: number): NutritionPer100g {
+export function scaleFromPer100g(
+  nutrition: {
+    kcalPer100g: number;
+    proteinPer100g: number;
+    carbsPer100g: number;
+    fatPer100g: number;
+  },
+  amountGrams: number
+): NutritionPer100g {
   const factor = amountGrams / 100;
   return {
-    kcal: roundToSingleDecimal(nutrition.kcal * factor),
-    proteinG: roundToSingleDecimal(nutrition.proteinG * factor),
-    carbsG: roundToSingleDecimal(nutrition.carbsG * factor),
-    fatG: roundToSingleDecimal(nutrition.fatG * factor),
+    kcal: roundToSingleDecimal(nutrition.kcalPer100g * factor),
+    proteinG: roundToSingleDecimal(nutrition.proteinPer100g * factor),
+    carbsG: roundToSingleDecimal(nutrition.carbsPer100g * factor),
+    fatG: roundToSingleDecimal(nutrition.fatPer100g * factor),
   };
+}
+
+function itemNeedsLookup(item: MealItemDraft): boolean {
+  return (
+    item.kcal === undefined ||
+    item.proteinG === undefined ||
+    item.carbsG === undefined ||
+    item.fatG === undefined
+  );
 }
 
 function maybeNeedsLookup(draft: MealDraft): boolean {
@@ -41,65 +71,31 @@ function maybeNeedsLookup(draft: MealDraft): boolean {
   );
 }
 
-async function findConsumedProduct(item: string) {
-  const normalizedItem = item.toLowerCase().trim();
-  if (!normalizedItem) {
-    return null;
-  }
-
-  const products = await prisma.consumedProduct.findMany({
-    select: {
-      id: true,
-      name: true,
-      aliases: true,
-      searchText: true,
-      kcalPer100g: true,
-      proteinPer100g: true,
-      carbsPer100g: true,
-      fatPer100g: true,
-    },
-    take: 200,
+function openFoodFactsSearchUrl(item: string): string {
+  const params = new URLSearchParams({
+    search_terms: item,
+    search_simple: "1",
+    action: "process",
+    page_size: "20",
+    countries_tags: "de",
   });
-
-  let bestMatch: (typeof products)[number] | null = null;
-  let bestScore = 0;
-
-  for (const product of products) {
-    const aliases = product.aliases
-      .split(",")
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean);
-    const terms = [product.name.toLowerCase(), ...aliases, product.searchText.toLowerCase()];
-
-    const score = terms.reduce((accumulator, term) => {
-      if (!term) {
-        return accumulator;
-      }
-      if (normalizedItem.includes(term)) {
-        return Math.max(accumulator, term.length + 5);
-      }
-      if (term.includes(normalizedItem)) {
-        return Math.max(accumulator, normalizedItem.length + 2);
-      }
-      return accumulator;
-    }, 0);
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = product;
-    }
-  }
-
-  return bestMatch;
+  return `https://world.openfoodfacts.org/cgi/search.pl?${params.toString()}`;
 }
 
-async function searchOpenFoodFactsGermany(item: string): Promise<NutritionPer100g | undefined> {
+function openFoodFactsProductUrl(code: string): string {
+  return `https://world.openfoodfacts.org/product/${encodeURIComponent(code)}`;
+}
+
+export async function getOpenFoodFactsCandidates(
+  item: string,
+  limit = 8
+): Promise<NutritionCandidate[]> {
   const params = new URLSearchParams({
     search_terms: item,
     search_simple: "1",
     action: "process",
     json: "1",
-    page_size: "1",
+    page_size: String(Math.max(1, Math.min(limit, 20))),
     countries_tags: "de",
   });
 
@@ -110,67 +106,50 @@ async function searchOpenFoodFactsGermany(item: string): Promise<NutritionPer100
     },
     cache: "no-store",
   });
-
   if (!response.ok) {
-    return undefined;
+    return [];
   }
 
   const payload = (await response.json()) as {
     products?: Array<{
+      code?: string;
+      product_name?: string;
+      brands?: string;
       nutriments?: Record<string, number | string | undefined>;
     }>;
   };
-  const nutriments = payload.products?.[0]?.nutriments;
-  if (!nutriments) {
-    return undefined;
+
+  const out: NutritionCandidate[] = [];
+  for (const [index, product] of (payload.products ?? []).entries()) {
+    const nutriments = product.nutriments;
+    if (!nutriments) continue;
+
+    const kcalRaw = nutriments["energy-kcal_100g"] ?? nutriments["energy-kcal"];
+    const kcal = typeof kcalRaw === "number" ? kcalRaw : Number(kcalRaw);
+    const protein = Number(nutriments.proteins_100g);
+    const carbs = Number(nutriments.carbohydrates_100g);
+    const fat = Number(nutriments.fat_100g);
+    if (![kcal, protein, carbs, fat].every((value) => Number.isFinite(value))) {
+      continue;
+    }
+
+    const id = product.code ? `off_${product.code}` : `off_idx_${index}_${item}`;
+    const url = product.code ? openFoodFactsProductUrl(product.code) : openFoodFactsSearchUrl(item);
+    out.push({
+      id,
+      name: product.product_name?.trim() || item,
+      brand: product.brands?.trim() || undefined,
+      kcalPer100g: roundToSingleDecimal(kcal),
+      proteinPer100g: roundToSingleDecimal(protein),
+      carbsPer100g: roundToSingleDecimal(carbs),
+      fatPer100g: roundToSingleDecimal(fat),
+      url,
+      sourceType: "openfoodfacts_de",
+      sourceLabel: "OpenFoodFacts Germany",
+    });
   }
 
-  const kcalRaw = nutriments["energy-kcal_100g"] ?? nutriments["energy-kcal"];
-  const kcal = typeof kcalRaw === "number" ? kcalRaw : Number(kcalRaw);
-  const protein = Number(nutriments.proteins_100g);
-  const carbs = Number(nutriments.carbohydrates_100g);
-  const fat = Number(nutriments.fat_100g);
-
-  if (![kcal, protein, carbs, fat].every((value) => Number.isFinite(value))) {
-    return undefined;
-  }
-
-  return {
-    kcal: roundToSingleDecimal(kcal),
-    proteinG: roundToSingleDecimal(protein),
-    carbsG: roundToSingleDecimal(carbs),
-    fatG: roundToSingleDecimal(fat),
-  };
-}
-
-function mergeNutritionWithDraft(
-  draft: MealDraft,
-  nutritionForAmount: NutritionPer100g,
-  source: NutritionLookupMeta
-) {
-  const assumptions = [...draft.assumptions];
-  assumptions.push(`Lookup source used: ${source.label}.`);
-  if (draft.amountGrams === undefined) {
-    assumptions.push("No grams provided; lookup assumed 100g.");
-  }
-
-  const updated: MealDraft = {
-    ...draft,
-    kcal: draft.kcal ?? nutritionForAmount.kcal,
-    proteinG: draft.proteinG ?? nutritionForAmount.proteinG,
-    carbsG: draft.carbsG ?? nutritionForAmount.carbsG,
-    fatG: draft.fatG ?? nutritionForAmount.fatG,
-    source:
-      draft.kcal === undefined &&
-      draft.proteinG === undefined &&
-      draft.carbsG === undefined &&
-      draft.fatG === undefined
-        ? "lookup"
-        : "mixed",
-    assumptions: Array.from(new Set(assumptions)),
-  };
-
-  return updated;
+  return out;
 }
 
 function mergeNutritionWithItem(
@@ -184,7 +163,7 @@ function mergeNutritionWithItem(
     assumptions.push("No grams provided; lookup assumed 100g.");
   }
 
-  const merged: MealItemDraft = {
+  return {
     ...item,
     kcal: item.kcal ?? nutritionForAmount.kcal,
     proteinG: item.proteinG ?? nutritionForAmount.proteinG,
@@ -198,20 +177,38 @@ function mergeNutritionWithItem(
         ? "lookup"
         : "mixed",
     assumptions: Array.from(new Set(assumptions)),
-  };
-
-  return merged;
+  } satisfies MealItemDraft;
 }
 
-function itemNeedsLookup(item: MealItemDraft): boolean {
-  return (
-    item.kcal === undefined ||
-    item.proteinG === undefined ||
-    item.carbsG === undefined ||
-    item.fatG === undefined
-  );
+function mergeNutritionWithDraft(
+  draft: MealDraft,
+  nutritionForAmount: NutritionPer100g,
+  source: NutritionLookupMeta
+) {
+  const assumptions = [...draft.assumptions];
+  assumptions.push(`Lookup source used: ${source.label}.`);
+  if (draft.amountGrams === undefined) {
+    assumptions.push("No grams provided; lookup assumed 100g.");
+  }
+
+  return {
+    ...draft,
+    kcal: draft.kcal ?? nutritionForAmount.kcal,
+    proteinG: draft.proteinG ?? nutritionForAmount.proteinG,
+    carbsG: draft.carbsG ?? nutritionForAmount.carbsG,
+    fatG: draft.fatG ?? nutritionForAmount.fatG,
+    source:
+      draft.kcal === undefined &&
+      draft.proteinG === undefined &&
+      draft.carbsG === undefined &&
+      draft.fatG === undefined
+        ? "lookup"
+        : "mixed",
+    assumptions: Array.from(new Set(assumptions)),
+  } satisfies MealDraft;
 }
 
+// Compatibility path for older callers. Uses the top web candidate directly.
 export async function enrichItemWithLookup(
   item: MealItemDraft
 ): Promise<{ item: MealItemDraft; lookup?: NutritionLookupMeta }> {
@@ -219,50 +216,21 @@ export async function enrichItemWithLookup(
     return { item };
   }
 
-  const amountForScale = item.amountGrams ?? DEFAULT_LOOKUP_GRAMS;
-
   try {
-    const consumedHit = await findConsumedProduct(item.name);
-    if (consumedHit) {
-      const nutrition = scaleFromPer100g(
-        {
-          kcal: consumedHit.kcalPer100g,
-          proteinG: consumedHit.proteinPer100g,
-          carbsG: consumedHit.carbsPer100g,
-          fatG: consumedHit.fatPer100g,
-        },
-        amountForScale
-      );
-
-      const lookup = {
-        sourceType: "consumed_products" as const,
-        label: `Consumed products DB (${consumedHit.name})`,
-      };
-      return {
-        item: mergeNutritionWithItem(item, nutrition, lookup),
-        lookup,
-      };
-    }
-  } catch (error) {
-    console.error("[nutrition-lookup] Consumed products DB lookup failed.", {
-      item: item.name,
-      error,
-    });
-  }
-
-  try {
-    const nutritionPer100g = await searchOpenFoodFactsGermany(item.name);
-    if (!nutritionPer100g) {
+    const candidates = await getOpenFoodFactsCandidates(item.name, 1);
+    const first = candidates[0];
+    if (!first) {
       return { item };
     }
-
+    const amountForScale = item.amountGrams ?? DEFAULT_LOOKUP_GRAMS;
+    const nutrition = scaleFromPer100g(first, amountForScale);
     const lookup = {
-      sourceType: "openfoodfacts_de" as const,
-      label: "OpenFoodFacts Germany",
+      sourceType: first.sourceType,
+      label: first.sourceLabel,
+      url: first.url,
     };
-
     return {
-      item: mergeNutritionWithItem(item, scaleFromPer100g(nutritionPer100g, amountForScale), lookup),
+      item: mergeNutritionWithItem(item, nutrition, lookup),
       lookup,
     };
   } catch (error) {
@@ -274,6 +242,7 @@ export async function enrichItemWithLookup(
   }
 }
 
+// Compatibility path for older callers. Uses the top web candidate directly.
 export async function enrichDraftWithLookup(
   draft: MealDraft
 ): Promise<{ draft: MealDraft; lookup?: NutritionLookupMeta }> {
@@ -281,54 +250,21 @@ export async function enrichDraftWithLookup(
     return { draft };
   }
 
-  const amountForScale = draft.amountGrams ?? DEFAULT_LOOKUP_GRAMS;
-
   try {
-    const consumedHit = await findConsumedProduct(draft.item);
-    if (consumedHit) {
-      const nutrition = scaleFromPer100g(
-        {
-          kcal: consumedHit.kcalPer100g,
-          proteinG: consumedHit.proteinPer100g,
-          carbsG: consumedHit.carbsPer100g,
-          fatG: consumedHit.fatPer100g,
-        },
-        amountForScale
-      );
-
-      const lookup = {
-        sourceType: "consumed_products" as const,
-        label: `Consumed products DB (${consumedHit.name})`,
-      };
-      return {
-        draft: mergeNutritionWithDraft(draft, nutrition, lookup),
-        lookup,
-      };
-    }
-  } catch (error) {
-    console.error("[nutrition-lookup] Consumed products DB lookup failed.", {
-      item: draft.item,
-      error,
-    });
-  }
-
-  try {
-    const nutritionPer100g = await searchOpenFoodFactsGermany(draft.item);
-    if (!nutritionPer100g) {
+    const candidates = await getOpenFoodFactsCandidates(draft.item, 1);
+    const first = candidates[0];
+    if (!first) {
       return { draft };
     }
-
+    const amountForScale = draft.amountGrams ?? DEFAULT_LOOKUP_GRAMS;
+    const nutrition = scaleFromPer100g(first, amountForScale);
     const lookup = {
-      sourceType: "openfoodfacts_de" as const,
-      label: "OpenFoodFacts Germany",
+      sourceType: first.sourceType,
+      label: first.sourceLabel,
+      url: first.url,
     };
-
     return {
-      draft: mergeNutritionWithDraft(
-        draft,
-        scaleFromPer100g(nutritionPer100g, amountForScale),
-        lookup
-      ),
+      draft: mergeNutritionWithDraft(draft, nutrition, lookup),
       lookup,
     };
   } catch (error) {

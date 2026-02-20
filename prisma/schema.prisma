@@ -38,6 +38,7 @@ model MealEntry {
   assumptions      String
   lookupSourceType String?
   lookupLabel      String?
+  lookupUrl        String?
   agentModel       String?
   berlinDate       String
   berlinTime       String
