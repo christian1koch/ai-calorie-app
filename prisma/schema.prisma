@@ -24,6 +24,7 @@ model ConsumedProduct {
 
 model MealEntry {
   id               Int      @id @default(autoincrement())
+  mealId           Int?
   intent           String   @default("log_meal")
   rawText          String
   item             String
@@ -43,6 +44,28 @@ model MealEntry {
   timezone         String   @default("Europe/Berlin")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+  meal             Meal?    @relation(fields: [mealId], references: [id], onDelete: SetNull)
+
+  @@index([berlinDate])
+  @@index([mealId])
+}
+
+model Meal {
+  id         Int        @id @default(autoincrement())
+  rawText    String
+  label      String
+  kcal       Float?
+  proteinG   Float?
+  carbsG     Float?
+  fatG       Float?
+  confidence String
+  assumptions String
+  berlinDate String
+  berlinTime String
+  timezone   String     @default("Europe/Berlin")
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  entries    MealEntry[]
 
   @@index([berlinDate])
 }

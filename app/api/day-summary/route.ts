@@ -6,6 +6,10 @@ function roundToSingleDecimal(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+function hasMealModel() {
+  return Boolean((prisma as unknown as { meal?: { findMany?: unknown } }).meal);
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const date = searchParams.get("date");
@@ -23,6 +27,58 @@ export async function GET(request: Request) {
     },
     orderBy: [{ berlinTime: "asc" }, { id: "asc" }],
   });
+  const meals = hasMealModel()
+    ? await (
+        prisma as unknown as {
+          meal: {
+            findMany: (args: unknown) => Promise<
+              Array<{
+                id: number;
+                label: string;
+                berlinTime: string;
+                kcal: number | null;
+                proteinG: number | null;
+                carbsG: number | null;
+                fatG: number | null;
+                entries: Array<{
+                  id: number;
+                  item: string;
+                  amountGrams: number | null;
+                  kcal: number | null;
+                  proteinG: number | null;
+                  carbsG: number | null;
+                  fatG: number | null;
+                }>;
+              }>
+            >;
+          };
+        }
+      ).meal.findMany({
+        where: {
+          berlinDate: date,
+        },
+        include: {
+          entries: {
+            orderBy: [{ id: "asc" }],
+          },
+        },
+        orderBy: [{ berlinTime: "asc" }, { id: "asc" }],
+      })
+    : [];
+
+  const fallbackMeals =
+    meals.length > 0
+      ? meals
+      : entries.map((entry) => ({
+          id: entry.id,
+          label: "Meal",
+          berlinTime: entry.berlinTime,
+          kcal: entry.kcal,
+          proteinG: entry.proteinG,
+          carbsG: entry.carbsG,
+          fatG: entry.fatG,
+          entries: [entry],
+        }));
 
   const totals = entries.reduce(
     (accumulator, entry) => {
@@ -44,7 +100,28 @@ export async function GET(request: Request) {
       carbsG: roundToSingleDecimal(totals.carbsG),
       fatG: roundToSingleDecimal(totals.fatG),
     },
+    mealCount: fallbackMeals.length,
     entryCount: entries.length,
+    meals: fallbackMeals.map((meal) => ({
+      id: meal.id,
+      label: meal.label,
+      berlinTime: meal.berlinTime,
+      totals: {
+        kcal: meal.kcal,
+        proteinG: meal.proteinG,
+        carbsG: meal.carbsG,
+        fatG: meal.fatG,
+      },
+      foods: meal.entries.map((entry) => ({
+        id: entry.id,
+        item: entry.item,
+        amountGrams: entry.amountGrams,
+        kcal: entry.kcal,
+        proteinG: entry.proteinG,
+        carbsG: entry.carbsG,
+        fatG: entry.fatG,
+      })),
+    })),
     entries: entries.map((entry) => ({
       id: entry.id,
       item: entry.item,

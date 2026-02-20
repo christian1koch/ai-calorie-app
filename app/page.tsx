@@ -1,22 +1,38 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-type ApiResult = {
+type AgentResponse = {
   ok?: boolean;
   error?: string;
   berlinDate?: string;
   berlinTime?: string;
-  timezone?: string;
-  entryDraft?: unknown;
-  normalizedDraft?: unknown;
-  deterministicDraft?: unknown;
-  agentExtraction?: unknown;
-  model?: string;
-  savedEntryId?: number;
-  note?: string;
+  action?: "log_meal" | "list_meals" | "delete_meal" | "add_to_meal";
+  assistantText?: string;
+  activeMealId?: number | null;
+  normalizedDraft?: {
+    items?: Array<{
+      name: string;
+      amountGrams?: number;
+      kcal?: number;
+      proteinG?: number;
+      carbsG?: number;
+      fatG?: number;
+    }>;
+  };
+  mealSummary?: {
+    text?: string;
+    totals?: {
+      kcal: number;
+      proteinG: number;
+      carbsG: number;
+      fatG: number;
+    };
+  };
+  meals?: Array<{ id: number; label: string; berlinTime: string; kcal: number | null }>;
+  savedEntryIds?: number[];
 };
 
 type SummaryEntry = {
@@ -33,26 +49,37 @@ type SummaryEntry = {
 };
 
 type DaySummaryResult = {
-  ok?: boolean;
   error?: string;
-  date?: string;
-  entryCount?: number;
   totals?: {
     kcal: number;
     proteinG: number;
     carbsG: number;
     fatG: number;
   };
+  meals?: Array<{
+    id: number;
+    label: string;
+    berlinTime: string;
+    totals: {
+      kcal: number | null;
+      proteinG: number | null;
+      carbsG: number | null;
+      fatG: number | null;
+    };
+    foods: Array<{
+      id: number;
+      item: string;
+      amountGrams: number | null;
+      kcal: number | null;
+    }>;
+  }>;
   entries?: SummaryEntry[];
 };
 
-type EntryEditState = {
-  item: string;
-  amountGrams: string;
-  kcal: string;
-  proteinG: string;
-  carbsG: string;
-  fatG: string;
+type ChatMessage = {
+  id: string;
+  role: "assistant" | "user";
+  text: string;
 };
 
 function berlinDateToday(): string {
@@ -61,30 +88,42 @@ function berlinDateToday(): string {
   });
 }
 
-function toStringValue(value: number | null): string {
-  return value === null ? "" : String(value);
-}
-
-function toNumberOrNull(value: string): number | null {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return null;
+function makeAssistantText(response: AgentResponse): string {
+  if (!response.ok) {
+    return "I couldn't log that meal right now. Please try again.";
   }
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : null;
+
+  if (response.assistantText) {
+    return response.assistantText;
+  }
+
+  if (response.mealSummary?.text) {
+    return response.mealSummary.text;
+  }
+
+  const items = response.normalizedDraft?.items ?? [];
+  if (items.length === 0) {
+    return "Meal logged.";
+  }
+
+  return `Logged ${items.map((item) => item.name).join(" + ")}.`;
 }
 
 export default function Home() {
-  const [text, setText] = useState("I had 250g quark 220 kcal protein 30g carbs 8g fat 2g");
-  const [parserResult, setParserResult] = useState<ApiResult | null>(null);
-  const [agentResult, setAgentResult] = useState<ApiResult | null>(null);
-  const [isParserLoading, setIsParserLoading] = useState(false);
+  const [text, setText] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: "welcome",
+      role: "assistant",
+      text: "Tell me what you ate in plain English, and I’ll log it.",
+    },
+  ]);
   const [isAgentLoading, setIsAgentLoading] = useState(false);
   const [summaryDate, setSummaryDate] = useState(berlinDateToday);
   const [summaryResult, setSummaryResult] = useState<DaySummaryResult | null>(null);
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
-  const [entryEdit, setEntryEdit] = useState<Record<number, EntryEditState>>({});
-  const [isSavingById, setIsSavingById] = useState<Record<number, boolean>>({});
+  const [showMeals, setShowMeals] = useState(false);
+  const [activeMealId, setActiveMealId] = useState<number | null>(null);
 
   async function loadDaySummary(date: string) {
     setIsSummaryLoading(true);
@@ -99,31 +138,24 @@ export default function Home() {
     }
   }
 
-  async function onParserSubmit(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    loadDaySummary(summaryDate);
+  }, [summaryDate]);
+
+  async function onSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setIsParserLoading(true);
-    setParserResult(null);
+    if (!text.trim()) return;
 
-    try {
-      const response = await fetch("/api/log-meal", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text }),
-      });
-      const data = (await response.json()) as ApiResult;
-      setParserResult(data);
-    } catch {
-      setParserResult({ error: "Request failed." });
-    } finally {
-      setIsParserLoading(false);
-    }
-  }
+    const userText = text.trim();
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      text: userText,
+    };
 
-  async function onAgentSubmit() {
+    setMessages((prev) => [...prev, userMessage]);
+    setText("");
     setIsAgentLoading(true);
-    setAgentResult(null);
 
     try {
       const response = await fetch("/api/agent/log-meal", {
@@ -131,244 +163,161 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text: userText, context: { activeMealId } }),
       });
-      const data = (await response.json()) as ApiResult;
-      setAgentResult(data);
+      const data = (await response.json()) as AgentResponse;
+      const assistantMessage: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        text: data.error ?? makeAssistantText(data),
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      if (data.activeMealId !== undefined) {
+        setActiveMealId(data.activeMealId);
+      }
       if (data.ok) {
         const refreshDate = data.berlinDate ?? summaryDate;
         setSummaryDate(refreshDate);
         await loadDaySummary(refreshDate);
       }
     } catch {
-      setAgentResult({ error: "Request failed." });
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          text: "I couldn't reach the server. Please try again.",
+        },
+      ]);
     } finally {
       setIsAgentLoading(false);
     }
   }
 
-  async function onSummarySubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await loadDaySummary(summaryDate);
-  }
-
-  function startEdit(entry: SummaryEntry) {
-    setEntryEdit((prev) => ({
-      ...prev,
-      [entry.id]: {
-        item: entry.item,
-        amountGrams: toStringValue(entry.amountGrams),
-        kcal: toStringValue(entry.kcal),
-        proteinG: toStringValue(entry.proteinG),
-        carbsG: toStringValue(entry.carbsG),
-        fatG: toStringValue(entry.fatG),
-      },
-    }));
-  }
-
-  async function saveEdit(entryId: number) {
-    const current = entryEdit[entryId];
-    if (!current) {
-      return;
-    }
-
-    setIsSavingById((prev) => ({ ...prev, [entryId]: true }));
-
-    try {
-      const response = await fetch(`/api/entry/${entryId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          item: current.item,
-          amountGrams: toNumberOrNull(current.amountGrams),
-          kcal: toNumberOrNull(current.kcal),
-          proteinG: toNumberOrNull(current.proteinG),
-          carbsG: toNumberOrNull(current.carbsG),
-          fatG: toNumberOrNull(current.fatG),
-        }),
-      });
-
-      const data = (await response.json()) as { error?: string };
-      if (!response.ok) {
-        setAgentResult({ error: data.error ?? "Failed to update entry." });
-        return;
-      }
-
-      await loadDaySummary(summaryDate);
-    } catch {
-      setAgentResult({ error: "Failed to update entry." });
-    } finally {
-      setIsSavingById((prev) => ({ ...prev, [entryId]: false }));
-    }
-  }
-
   return (
-    <main className="mx-auto min-h-screen max-w-5xl px-6 py-12">
-      <h1 className="text-3xl font-bold tracking-tight">AI Calorie Tracker (MVP)</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Test both deterministic parsing and live agent extraction for intent `log_meal`.
-      </p>
-
-      <form onSubmit={onParserSubmit} className="mt-8 space-y-3">
-        <label htmlFor="meal-input" className="text-sm font-medium">
-          Meal text (English)
-        </label>
-        <Input
-          id="meal-input"
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          placeholder="I had 200g skyr and an apple"
-        />
-        <div className="flex gap-3">
-          <Button type="submit" disabled={isParserLoading || text.trim().length === 0}>
-            {isParserLoading ? "Parsing..." : "Deterministic parse"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onAgentSubmit}
-            disabled={isAgentLoading || text.trim().length === 0}
-          >
-            {isAgentLoading ? "Calling agent..." : "Agent parse"}
-          </Button>
-        </div>
-      </form>
-
-      <section className="mt-8">
-        <h2 className="text-lg font-semibold">Deterministic Response</h2>
-        <pre className="mt-3 overflow-x-auto rounded-md border p-4 text-xs leading-5">
-          {JSON.stringify(parserResult, null, 2)}
-        </pre>
-      </section>
-
-      <section className="mt-8">
-        <h2 className="text-lg font-semibold">Agent Response</h2>
-        <pre className="mt-3 overflow-x-auto rounded-md border p-4 text-xs leading-5">
-          {JSON.stringify(agentResult, null, 2)}
-        </pre>
-      </section>
-
-      <section className="mt-10">
-        <h2 className="text-lg font-semibold">Day Summary</h2>
-        <form onSubmit={onSummarySubmit} className="mt-3 flex items-center gap-3">
-          <Input
-            type="date"
-            value={summaryDate}
-            onChange={(event) => setSummaryDate(event.target.value)}
-            className="max-w-xs"
-          />
-          <Button type="submit" variant="outline" disabled={isSummaryLoading}>
-            {isSummaryLoading ? "Loading..." : "Load summary"}
-          </Button>
-        </form>
-
-        <pre className="mt-3 overflow-x-auto rounded-md border p-4 text-xs leading-5">
-          {JSON.stringify(summaryResult, null, 2)}
-        </pre>
-
-        {summaryResult?.entries && summaryResult.entries.length > 0 ? (
-          <div className="mt-4 space-y-3">
-            {summaryResult.entries.map((entry) => {
-              const edit = entryEdit[entry.id];
-              return (
-                <div key={entry.id} className="rounded-md border p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-sm font-medium">
-                      #{entry.id} at {entry.berlinTime}
-                    </div>
-                    {!edit ? (
-                      <Button type="button" size="sm" onClick={() => startEdit(entry)}>
-                        Edit
-                      </Button>
-                    ) : (
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => saveEdit(entry.id)}
-                        disabled={isSavingById[entry.id]}
-                      >
-                        {isSavingById[entry.id] ? "Saving..." : "Save"}
-                      </Button>
-                    )}
-                  </div>
-
-                  {edit ? (
-                    <div className="grid grid-cols-2 gap-2 md:grid-cols-6">
-                      <Input
-                        value={edit.item}
-                        onChange={(event) =>
-                          setEntryEdit((prev) => ({
-                            ...prev,
-                            [entry.id]: { ...edit, item: event.target.value },
-                          }))
-                        }
-                        placeholder="item"
-                      />
-                      <Input
-                        value={edit.amountGrams}
-                        onChange={(event) =>
-                          setEntryEdit((prev) => ({
-                            ...prev,
-                            [entry.id]: { ...edit, amountGrams: event.target.value },
-                          }))
-                        }
-                        placeholder="grams"
-                      />
-                      <Input
-                        value={edit.kcal}
-                        onChange={(event) =>
-                          setEntryEdit((prev) => ({
-                            ...prev,
-                            [entry.id]: { ...edit, kcal: event.target.value },
-                          }))
-                        }
-                        placeholder="kcal"
-                      />
-                      <Input
-                        value={edit.proteinG}
-                        onChange={(event) =>
-                          setEntryEdit((prev) => ({
-                            ...prev,
-                            [entry.id]: { ...edit, proteinG: event.target.value },
-                          }))
-                        }
-                        placeholder="protein"
-                      />
-                      <Input
-                        value={edit.carbsG}
-                        onChange={(event) =>
-                          setEntryEdit((prev) => ({
-                            ...prev,
-                            [entry.id]: { ...edit, carbsG: event.target.value },
-                          }))
-                        }
-                        placeholder="carbs"
-                      />
-                      <Input
-                        value={edit.fatG}
-                        onChange={(event) =>
-                          setEntryEdit((prev) => ({
-                            ...prev,
-                            [entry.id]: { ...edit, fatG: event.target.value },
-                          }))
-                        }
-                        placeholder="fat"
-                      />
-                    </div>
-                  ) : (
-                    <div className="text-sm text-muted-foreground">
-                      {entry.item} | {entry.amountGrams ?? "-"}g | {entry.kcal ?? "-"} kcal | P{" "}
-                      {entry.proteinG ?? "-"} C {entry.carbsG ?? "-"} F {entry.fatG ?? "-"}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+    <main className="min-h-screen bg-gradient-to-b from-background via-background to-muted/40 px-4 py-6 md:px-8">
+      <div className="mx-auto grid w-full max-w-6xl gap-6 md:grid-cols-[1.6fr_1fr]">
+        <section className="rounded-xl border bg-card p-4 shadow-sm md:p-6">
+          <div className="mb-4">
+            <h1 className="text-2xl font-semibold tracking-tight">Calorie Agent</h1>
+            <p className="text-sm text-muted-foreground">
+              Chat naturally. I’ll log meals and keep your daily totals updated.
+            </p>
           </div>
-        ) : null}
-      </section>
+
+          <div className="h-[52vh] overflow-y-auto rounded-lg border bg-muted/40 p-3">
+            <div className="space-y-3">
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={
+                    message.role === "user"
+                      ? "ml-auto max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                      : "mr-auto max-w-[85%] rounded-lg bg-card px-3 py-2 text-sm text-card-foreground shadow-sm"
+                  }
+                >
+                  {message.text}
+                </div>
+              ))}
+              {isAgentLoading ? (
+                <div className="mr-auto max-w-[85%] rounded-lg bg-card px-3 py-2 text-sm text-muted-foreground shadow-sm">
+                  Thinking...
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <form onSubmit={onSendMessage} className="mt-4 flex gap-2">
+            <Input
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder="I had chicken and rice for lunch..."
+            />
+            <Button type="submit" disabled={isAgentLoading || text.trim().length === 0}>
+              Send
+            </Button>
+          </form>
+        </section>
+
+        <aside className="space-y-4">
+          <section className="rounded-xl border bg-card p-5 shadow-sm">
+            <div className="text-xs uppercase text-muted-foreground">Today ({summaryDate})</div>
+            <div className="mt-2 text-4xl font-semibold leading-none">
+              {summaryResult?.totals?.kcal ?? 0}
+            </div>
+            <div className="mt-1 text-sm text-muted-foreground">kcal total</div>
+
+            <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded-md border p-2">
+                <div className="text-muted-foreground">Protein</div>
+                <div className="font-medium">{summaryResult?.totals?.proteinG ?? 0}g</div>
+              </div>
+              <div className="rounded-md border p-2">
+                <div className="text-muted-foreground">Carbs</div>
+                <div className="font-medium">{summaryResult?.totals?.carbsG ?? 0}g</div>
+              </div>
+              <div className="rounded-md border p-2">
+                <div className="text-muted-foreground">Fat</div>
+                <div className="font-medium">{summaryResult?.totals?.fatG ?? 0}g</div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowMeals((prev) => !prev)}
+                className="w-full"
+              >
+                {showMeals ? "Hide meals" : "Show meals"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => loadDaySummary(summaryDate)}
+                disabled={isSummaryLoading}
+              >
+                Refresh
+              </Button>
+            </div>
+          </section>
+
+          {showMeals ? (
+            <section className="rounded-xl border bg-card p-4 shadow-sm">
+              <h2 className="text-sm font-semibold">Meals</h2>
+              <div className="mt-3 space-y-2">
+                {summaryResult?.meals && summaryResult.meals.length > 0 ? (
+                  summaryResult.meals.map((meal) => (
+                    <div key={meal.id} className="rounded-md border p-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium">
+                          {meal.label} ({meal.berlinTime})
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {meal.totals.kcal ?? "-"} kcal
+                        </div>
+                      </div>
+                      <div className="mt-2 space-y-1">
+                        {meal.foods.map((food) => (
+                          <div key={food.id} className="text-xs text-muted-foreground">
+                            {food.item} | {food.amountGrams ?? "-"}g | {food.kcal ?? "-"} kcal
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-muted-foreground">No meals logged for this day yet.</div>
+                )}
+              </div>
+            </section>
+          ) : null}
+
+          <section className="rounded-xl border bg-card p-4 text-xs text-muted-foreground shadow-sm">
+            Need debugging details? Open <a href="/debug" className="underline">/debug</a>.
+          </section>
+        </aside>
+      </div>
     </main>
   );
 }

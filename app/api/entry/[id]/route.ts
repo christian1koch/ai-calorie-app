@@ -24,6 +24,33 @@ function asOptionalNumber(value: unknown): number | null | undefined {
   return value;
 }
 
+async function recalcMealTotals(mealId: number) {
+  const entries = await prisma.mealEntry.findMany({
+    where: { mealId },
+    select: { kcal: true, proteinG: true, carbsG: true, fatG: true },
+  });
+  const totals = entries.reduce<{
+    kcal: number;
+    proteinG: number;
+    carbsG: number;
+    fatG: number;
+  }>(
+    (accumulator, entry) => {
+      accumulator.kcal += entry.kcal ?? 0;
+      accumulator.proteinG += entry.proteinG ?? 0;
+      accumulator.carbsG += entry.carbsG ?? 0;
+      accumulator.fatG += entry.fatG ?? 0;
+      return accumulator;
+    },
+    { kcal: 0, proteinG: 0, carbsG: 0, fatG: 0 }
+  );
+
+  await prisma.meal.update({
+    where: { id: mealId },
+    data: totals,
+  });
+}
+
 export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> }
@@ -80,6 +107,9 @@ export async function PATCH(
       where: { id },
       data,
     });
+    if (updated.mealId) {
+      await recalcMealTotals(updated.mealId);
+    }
 
     return NextResponse.json({
       ok: true,

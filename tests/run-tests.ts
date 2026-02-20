@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { parseLogMeal } from "../lib/log-meal";
 import { enrichDraftWithLookup } from "../lib/nutrition-lookup";
+import { getUserFacingItemLabel, normalizeItemQuantity } from "../lib/log-meal-items";
 import { prisma } from "../lib/prisma";
 import type { MealDraft } from "../lib/log-meal";
 import { GET as getDaySummary } from "../app/api/day-summary/route";
@@ -60,12 +61,65 @@ async function testLookupPriority() {
   assert.equal(fetchCalled, false);
 }
 
+async function testEggQuantityConversion() {
+  const converted = normalizeItemQuantity({
+    name: "eggs",
+    quantity: 4,
+    unit: "eggs",
+    size: "medium",
+    assumptions: [],
+    source: "agent",
+  });
+
+  assert.equal(converted.amountGrams, 200);
+  assert.equal(
+    converted.assumptions.includes("Converted 4 medium egg(s) to 200g (50g each)."),
+    true
+  );
+  assert.equal(getUserFacingItemLabel(converted), "4 eggs");
+}
+
 async function testDaySummaryBucketing() {
+  await prisma.meal.deleteMany();
   await prisma.mealEntry.deleteMany();
+
+  const breakfastMeal = await prisma.meal.create({
+    data: {
+      rawText: "breakfast",
+      label: "Breakfast",
+      kcal: 500,
+      proteinG: 50,
+      carbsG: 50,
+      fatG: 15,
+      confidence: "high",
+      assumptions: "",
+      berlinDate: "2026-02-20",
+      berlinTime: "08:00:00",
+      timezone: "Europe/Berlin",
+    },
+  });
+
+  const nextDayMeal = await prisma.meal.create({
+    data: {
+      rawText: "next day meal",
+      label: "Meal",
+      kcal: 900,
+      proteinG: 90,
+      carbsG: 90,
+      fatG: 90,
+      confidence: "high",
+      assumptions: "",
+      berlinDate: "2026-02-21",
+      berlinTime: "09:00:00",
+      timezone: "Europe/Berlin",
+    },
+  });
+
   await prisma.mealEntry.createMany({
     data: [
       {
         intent: "log_meal",
+        mealId: breakfastMeal.id,
         rawText: "meal-1",
         item: "Meal 1",
         kcal: 200,
@@ -81,6 +135,7 @@ async function testDaySummaryBucketing() {
       },
       {
         intent: "log_meal",
+        mealId: breakfastMeal.id,
         rawText: "meal-2",
         item: "Meal 2",
         kcal: 300,
@@ -96,6 +151,7 @@ async function testDaySummaryBucketing() {
       },
       {
         intent: "log_meal",
+        mealId: nextDayMeal.id,
         rawText: "meal-3",
         item: "Meal 3",
         kcal: 900,
@@ -116,11 +172,13 @@ async function testDaySummaryBucketing() {
     new Request("http://localhost:3000/api/day-summary?date=2026-02-20")
   );
   const body = (await response.json()) as {
+    mealCount: number;
     entryCount: number;
     totals: { kcal: number; proteinG: number; carbsG: number; fatG: number };
   };
 
   assert.equal(response.status, 200);
+  assert.equal(body.mealCount, 1);
   assert.equal(body.entryCount, 2);
   assert.deepEqual(body.totals, {
     kcal: 500,
@@ -149,9 +207,32 @@ async function run() {
     'CREATE UNIQUE INDEX IF NOT EXISTS "ConsumedProduct_name_key" ON "ConsumedProduct"("name");'
   );
   await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "Meal" (
+      "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      "rawText" TEXT NOT NULL,
+      "label" TEXT NOT NULL,
+      "kcal" REAL,
+      "proteinG" REAL,
+      "carbsG" REAL,
+      "fatG" REAL,
+      "confidence" TEXT NOT NULL,
+      "assumptions" TEXT NOT NULL,
+      "berlinDate" TEXT NOT NULL,
+      "berlinTime" TEXT NOT NULL,
+      "timezone" TEXT NOT NULL DEFAULT 'Europe/Berlin',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX IF NOT EXISTS "Meal_berlinDate_idx" ON "Meal"("berlinDate");'
+  );
+
+  await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS "MealEntry" (
       "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
       "intent" TEXT NOT NULL DEFAULT 'log_meal',
+      "mealId" INTEGER,
       "rawText" TEXT NOT NULL,
       "item" TEXT NOT NULL,
       "amountGrams" REAL,
@@ -175,6 +256,7 @@ async function run() {
 
   await testDeterministicMath();
   await testLookupPriority();
+  await testEggQuantityConversion();
   await testDaySummaryBucketing();
 
   console.log("All tests passed.");

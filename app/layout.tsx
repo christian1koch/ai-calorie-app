@@ -21,7 +21,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className="dark">
       <body
         className={cn(
           "min-h-screen bg-background font-sans antialiased",
@@ -30,7 +30,7 @@ export default function RootLayout({
       >
         <ThemeProvider
           disableTransitionOnChange
-          enableSystem
+          enableSystem={false}
           attribute="class"
           defaultTheme="dark"
         >

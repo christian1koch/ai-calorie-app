@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { PrismaClient } = require("@prisma/client");
 
 const prisma = new PrismaClient();
@@ -56,9 +57,30 @@ async function main() {
   );
 
   await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "Meal" (
+      "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      "rawText" TEXT NOT NULL,
+      "label" TEXT NOT NULL,
+      "kcal" REAL,
+      "proteinG" REAL,
+      "carbsG" REAL,
+      "fatG" REAL,
+      "confidence" TEXT NOT NULL,
+      "assumptions" TEXT NOT NULL,
+      "berlinDate" TEXT NOT NULL,
+      "berlinTime" TEXT NOT NULL,
+      "timezone" TEXT NOT NULL DEFAULT 'Europe/Berlin',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "Meal_berlinDate_idx" ON "Meal"("berlinDate");');
+
+  await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS "MealEntry" (
       "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
       "intent" TEXT NOT NULL DEFAULT 'log_meal',
+      "mealId" INTEGER,
       "rawText" TEXT NOT NULL,
       "item" TEXT NOT NULL,
       "amountGrams" REAL,
@@ -79,9 +101,16 @@ async function main() {
       "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  try {
+    await prisma.$executeRawUnsafe('ALTER TABLE "MealEntry" ADD COLUMN "mealId" INTEGER;');
+  } catch {
+    // Column already exists for existing local databases.
+  }
   await prisma.$executeRawUnsafe(
     'CREATE INDEX IF NOT EXISTS "MealEntry_berlinDate_idx" ON "MealEntry"("berlinDate");'
   );
+  await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "MealEntry_mealId_idx" ON "MealEntry"("mealId");');
 
   for (const product of products) {
     await prisma.consumedProduct.upsert({
