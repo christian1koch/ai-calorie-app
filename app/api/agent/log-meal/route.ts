@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { MealDraft, parseLogMeal } from "@/lib/log-meal";
 import { enrichDraftWithLookup } from "@/lib/nutrition-lookup";
+import { prisma } from "@/lib/prisma";
+import { getBerlinNow } from "@/lib/berlin-time";
 
 type LogMealRequest = {
   text?: string;
@@ -17,28 +19,6 @@ type AgentExtraction = {
   assumptions?: string[];
   confidence?: "low" | "medium" | "high";
 };
-
-function berlinNow() {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Berlin",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-
-  const parts = formatter.formatToParts(new Date());
-  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-
-  return {
-    berlinDate: `${map.year}-${map.month}-${map.day}`,
-    berlinTime: `${map.hour}:${map.minute}:${map.second}`,
-    timezone: "Europe/Berlin",
-  };
-}
 
 function extractOutputText(responseBody: unknown): string | null {
   if (!responseBody || typeof responseBody !== "object") {
@@ -117,7 +97,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        ...berlinNow(),
+        ...getBerlinNow(),
         error: "Missing OPENAI_API_KEY on server.",
         deterministicDraft,
       },
@@ -194,7 +174,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        ...berlinNow(),
+        ...getBerlinNow(),
         error: "Agent request failed. See server logs for details.",
         deterministicDraft,
       },
@@ -217,7 +197,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        ...berlinNow(),
+        ...getBerlinNow(),
         error: `Agent request failed with status ${response.status}. See server logs for details.`,
         deterministicDraft,
       },
@@ -232,7 +212,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        ...berlinNow(),
+        ...getBerlinNow(),
         error: "Agent returned no text output. See server logs for details.",
         deterministicDraft,
       },
@@ -248,7 +228,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        ...berlinNow(),
+        ...getBerlinNow(),
         error: "Agent output was not valid JSON. See server logs for details.",
         deterministicDraft,
       },
@@ -261,7 +241,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        ...berlinNow(),
+        ...getBerlinNow(),
         error: "Agent returned unexpected intent. See server logs for details.",
         deterministicDraft,
       },
@@ -271,14 +251,56 @@ export async function POST(request: Request) {
 
   const normalizedDraft = mergeAgentIntoDraft(text, deterministicDraft, agentExtraction);
   const { draft: lookedUpDraft, lookup } = await enrichDraftWithLookup(normalizedDraft);
+  const berlinNow = getBerlinNow();
+
+  let savedEntryId: number | null = null;
+  try {
+    const saved = await prisma.mealEntry.create({
+      data: {
+        intent: "log_meal",
+        rawText: lookedUpDraft.rawText,
+        item: lookedUpDraft.item,
+        amountGrams: lookedUpDraft.amountGrams,
+        kcal: lookedUpDraft.kcal,
+        proteinG: lookedUpDraft.proteinG,
+        carbsG: lookedUpDraft.carbsG,
+        fatG: lookedUpDraft.fatG,
+        source: lookedUpDraft.source,
+        confidence: lookedUpDraft.confidence,
+        assumptions: lookedUpDraft.assumptions.join("\n"),
+        lookupSourceType: lookup?.sourceType,
+        lookupLabel: lookup?.label,
+        agentModel: model,
+        berlinDate: berlinNow.berlinDate,
+        berlinTime: berlinNow.berlinTime,
+        timezone: berlinNow.timezone,
+      },
+      select: {
+        id: true,
+      },
+    });
+    savedEntryId = saved.id;
+  } catch (error) {
+    logAgentError("Failed to save meal entry.", { error });
+    return NextResponse.json(
+      {
+        ok: false,
+        ...berlinNow,
+        error: "Meal parsed but failed to persist. See server logs for details.",
+        normalizedDraft: lookedUpDraft,
+      },
+      { status: 500 }
+    );
+  }
 
   return NextResponse.json({
     ok: true,
-    ...berlinNow(),
+    ...berlinNow,
     model,
     normalizedDraft: lookedUpDraft,
     agentExtraction,
     lookup,
+    savedEntryId,
     note: "MVP slice: live agent extraction + deterministic normalization.",
   });
 }

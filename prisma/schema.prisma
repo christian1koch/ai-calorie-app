@@ -21,3 +21,28 @@ model ConsumedProduct {
 
   @@index([searchText])
 }
+
+model MealEntry {
+  id               Int      @id @default(autoincrement())
+  intent           String   @default("log_meal")
+  rawText          String
+  item             String
+  amountGrams      Float?
+  kcal             Float?
+  proteinG         Float?
+  carbsG           Float?
+  fatG             Float?
+  source           String
+  confidence       String
+  assumptions      String
+  lookupSourceType String?
+  lookupLabel      String?
+  agentModel       String?
+  berlinDate       String
+  berlinTime       String
+  timezone         String   @default("Europe/Berlin")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([berlinDate])
+}

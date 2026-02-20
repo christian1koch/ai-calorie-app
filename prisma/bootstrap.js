@@ -55,6 +55,34 @@ async function main() {
     'CREATE INDEX IF NOT EXISTS "ConsumedProduct_searchText_idx" ON "ConsumedProduct"("searchText");'
   );
 
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "MealEntry" (
+      "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      "intent" TEXT NOT NULL DEFAULT 'log_meal',
+      "rawText" TEXT NOT NULL,
+      "item" TEXT NOT NULL,
+      "amountGrams" REAL,
+      "kcal" REAL,
+      "proteinG" REAL,
+      "carbsG" REAL,
+      "fatG" REAL,
+      "source" TEXT NOT NULL,
+      "confidence" TEXT NOT NULL,
+      "assumptions" TEXT NOT NULL,
+      "lookupSourceType" TEXT,
+      "lookupLabel" TEXT,
+      "agentModel" TEXT,
+      "berlinDate" TEXT NOT NULL,
+      "berlinTime" TEXT NOT NULL,
+      "timezone" TEXT NOT NULL DEFAULT 'Europe/Berlin',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX IF NOT EXISTS "MealEntry_berlinDate_idx" ON "MealEntry"("berlinDate");'
+  );
+
   for (const product of products) {
     await prisma.consumedProduct.upsert({
       where: { name: product.name },
